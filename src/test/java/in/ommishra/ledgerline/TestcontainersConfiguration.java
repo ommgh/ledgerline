@@ -18,6 +18,6 @@ public class TestcontainersConfiguration {
     @Bean
     @ServiceConnection
     KafkaContainer kafka() {
-        return new KafkaContainer("apache/kafka-native:4.1.1");
+        return new KafkaContainer("apache/kafka:4.1.1");
     }
 }
