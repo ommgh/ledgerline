@@ -47,3 +47,5 @@ ledgerline:
     batch-size: 100
   webhooks:
     razorpay-secret: ${RAZORPAY_WEBHOOK_SECRET:dev-only-secret}
+  integrity:
+    check-cron: "0 */10 * * * *"
