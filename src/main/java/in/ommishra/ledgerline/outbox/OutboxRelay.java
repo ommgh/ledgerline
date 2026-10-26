@@ -3,12 +3,14 @@ package in.ommishra.ledgerline.outbox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -45,15 +47,23 @@ public class OutboxRelay {
         } while (published == properties.batchSize());
     }
 
-    /** Returns how many events were published; stops at the first failure to keep per-aggregate order. */
+    /**
+     * Returns how many events were published. The whole batch is handed to the
+     * producer before waiting on any acknowledgement, so sends are pipelined;
+     * the idempotent producer keeps them in order per partition. Rows are marked
+     * in order up to the first failure, and everything after it is retried.
+     */
     int publishBatch() {
         Integer published = transactionTemplate.execute(status -> {
             List<OutboxEvent> batch = events.lockUnpublished(properties.batchSize());
+            List<CompletableFuture<SendResult<String, String>>> sends = batch.stream()
+                    .map(event -> kafka.send(properties.topic(), event.getAggregateId().toString(), event.getPayload()))
+                    .toList();
             int sent = 0;
-            for (OutboxEvent event : batch) {
+            for (int i = 0; i < batch.size(); i++) {
+                OutboxEvent event = batch.get(i);
                 try {
-                    kafka.send(properties.topic(), event.getAggregateId().toString(), event.getPayload())
-                            .get(10, TimeUnit.SECONDS);
+                    sends.get(i).get(10, TimeUnit.SECONDS);
                     event.markPublished();
                     sent++;
                 } catch (Exception e) {

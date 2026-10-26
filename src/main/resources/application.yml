@@ -18,6 +18,10 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
+          # postings and outbox updates go out as JDBC batches instead of one statement each
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
   mvc:
     problemdetails:
       enabled: true
@@ -25,12 +29,18 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       acks: all
+      properties:
+        linger.ms: 5
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # component statuses (db, kafka, ledger) are visible; details stay hidden
+      show-components: always
 
 ledgerline:
   ledger:
@@ -44,7 +54,7 @@ ledgerline:
     topic: ledger.events
     partitions: 3
     poll-interval-ms: 500
-    batch-size: 100
+    batch-size: 500
   webhooks:
     razorpay-secret: ${RAZORPAY_WEBHOOK_SECRET:dev-only-secret}
   integrity:

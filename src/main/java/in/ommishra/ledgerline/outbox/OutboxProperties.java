@@ -7,5 +7,5 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record OutboxProperties(
         @DefaultValue("ledger.events") String topic,
         @DefaultValue("3") int partitions,
-        @DefaultValue("100") int batchSize) {
+        @DefaultValue("500") int batchSize) {
 }
