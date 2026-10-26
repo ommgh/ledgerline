@@ -1,0 +1,19 @@
+package in.ommishra.ledgerline.common;
+
+/**
+ * A request that is well formed but breaks a ledger rule (unbalanced entry,
+ * insufficient funds, currency mismatch). Mapped to 422.
+ */
+public class BusinessRuleException extends RuntimeException {
+
+    private final String code;
+
+    public BusinessRuleException(String code, String message) {
+        super(message);
+        this.code = code;
+    }
+
+    public String code() {
+        return code;
+    }
+}
