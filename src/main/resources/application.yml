@@ -27,3 +27,8 @@ management:
     web:
       exposure:
         include: health,info,metrics,prometheus
+
+ledgerline:
+  ledger:
+    # attempts after the first when two transactions update the same account
+    max-retries: 10

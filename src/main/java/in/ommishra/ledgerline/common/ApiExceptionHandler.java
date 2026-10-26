@@ -1,5 +1,6 @@
 package in.ommishra.ledgerline.common;
 
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -19,5 +20,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, ex.getMessage());
         problem.setProperty("code", ex.code());
         return problem;
+    }
+
+    /** Retries were exhausted on a hot account; the client can safely retry with the same idempotency key. */
+    @ExceptionHandler(ConcurrencyFailureException.class)
+    ProblemDetail contention(ConcurrencyFailureException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "Account is busy, retry the request");
     }
 }
