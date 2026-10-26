@@ -5,6 +5,7 @@ import in.ommishra.ledgerline.account.AccountRepository;
 import in.ommishra.ledgerline.common.BusinessRuleException;
 import in.ommishra.ledgerline.common.Direction;
 import in.ommishra.ledgerline.common.NotFoundException;
+import in.ommishra.ledgerline.outbox.Outbox;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,10 +33,12 @@ public class LedgerService {
 
     private final AccountRepository accounts;
     private final JournalEntryRepository entries;
+    private final Outbox outbox;
 
-    public LedgerService(AccountRepository accounts, JournalEntryRepository entries) {
+    public LedgerService(AccountRepository accounts, JournalEntryRepository entries, Outbox outbox) {
         this.accounts = accounts;
         this.entries = entries;
+        this.outbox = outbox;
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -61,7 +64,9 @@ public class LedgerService {
             account.apply(leg.direction(), leg.amount());
             entry.addPosting(leg);
         }
-        return entries.save(entry);
+        JournalEntry saved = entries.save(entry);
+        outbox.append("JournalEntry", saved.getId(), "LedgerEntryPosted", LedgerEntryPosted.from(saved));
+        return saved;
     }
 
     static void validateBalanced(List<Leg> legs) {

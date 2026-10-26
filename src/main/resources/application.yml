@@ -21,6 +21,10 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
 
 management:
   endpoints:
@@ -36,3 +40,8 @@ ledgerline:
     # how long a key is remembered; retries after this are treated as new requests
     retention: 24h
     purge-cron: "0 15 * * * *"
+  outbox:
+    topic: ledger.events
+    partitions: 3
+    poll-interval-ms: 500
+    batch-size: 100
