@@ -32,3 +32,7 @@ ledgerline:
   ledger:
     # attempts after the first when two transactions update the same account
     max-retries: 10
+  idempotency:
+    # how long a key is remembered; retries after this are treated as new requests
+    retention: 24h
+    purge-cron: "0 15 * * * *"

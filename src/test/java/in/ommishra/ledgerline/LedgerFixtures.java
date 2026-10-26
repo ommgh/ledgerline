@@ -36,7 +36,8 @@ public class LedgerFixtures {
     /** Tops up a wallet from the bank: the bank asset grows and so does what we owe the wallet holder. */
     public Account fundedWallet(Account bank, long amount) {
         Account wallet = wallet();
-        transfers.transfer(new TransferRequest(bank.getId(), wallet.getId(), amount, "INR", null, "top-up"));
+        transfers.transfer(UUID.randomUUID().toString(),
+                new TransferRequest(bank.getId(), wallet.getId(), amount, "INR", null, "top-up"));
         return wallet;
     }
 

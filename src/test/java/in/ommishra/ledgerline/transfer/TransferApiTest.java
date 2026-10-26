@@ -8,6 +8,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.UUID;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -30,6 +32,7 @@ class TransferApiTest {
         Account ravi = fixtures.wallet();
 
         mvc.perform(post("/api/v1/transfers")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(transfer(asha, ravi, 2_500)))
                 .andExpect(status().isCreated())
@@ -56,6 +59,7 @@ class TransferApiTest {
         Account ravi = fixtures.wallet();
 
         mvc.perform(post("/api/v1/transfers")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(transfer(asha, ravi, 1_001)))
                 .andExpect(status().isUnprocessableContent())
@@ -72,6 +76,7 @@ class TransferApiTest {
         Account ravi = fixtures.wallet();
 
         mvc.perform(post("/api/v1/transfers")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(transfer(asha, ravi, 100).replace("INR", "USD")))
                 .andExpect(status().isUnprocessableContent())
@@ -84,6 +89,7 @@ class TransferApiTest {
         Account asha = fixtures.fundedWallet(bank, 1_000);
 
         mvc.perform(post("/api/v1/transfers")
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(transfer(asha, asha, 100)))
                 .andExpect(status().isUnprocessableContent())

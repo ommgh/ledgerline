@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -55,7 +56,7 @@ class ConcurrentTransferTest {
                     int to = (from + 1 + random.nextInt(WALLETS - 1)) % WALLETS;
                     long amount = 1 + random.nextInt(3_000);
                     try {
-                        transfers.transfer(new TransferRequest(wallets.get(from).getId(), wallets.get(to).getId(),
+                        transfers.transfer(UUID.randomUUID().toString(), new TransferRequest(wallets.get(from).getId(), wallets.get(to).getId(),
                                 amount, "INR", null, null));
                         succeeded.incrementAndGet();
                     } catch (BusinessRuleException insufficientFunds) {
