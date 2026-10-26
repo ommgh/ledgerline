@@ -45,3 +45,5 @@ ledgerline:
     partitions: 3
     poll-interval-ms: 500
     batch-size: 100
+  webhooks:
+    razorpay-secret: ${RAZORPAY_WEBHOOK_SECRET:dev-only-secret}
