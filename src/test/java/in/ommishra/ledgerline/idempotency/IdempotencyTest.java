@@ -150,6 +150,40 @@ class IdempotencyTest {
                 "select count(*) from journal_entries where reference = 'dup-race'", Integer.class)).isEqualTo(1);
     }
 
+    /**
+     * The transfer empties the wallet, so a duplicate that runs the work after the
+     * winner commits would fail with insufficient funds instead of replaying.
+     */
+    @Test
+    void concurrentDuplicatesThatDrainTheWalletAllGetTheOriginalResponse() throws Exception {
+        Account bank = fixtures.bank();
+        Account asha = fixtures.fundedWallet(bank, 1_000);
+        Account ravi = fixtures.wallet();
+        String key = UUID.randomUUID().toString();
+        TransferRequest request = new TransferRequest(asha.getId(), ravi.getId(), 1_000, "INR", "drain-race", null);
+
+        int clients = 16;
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Idempotent<TransferResponse>>> results = new ArrayList<>();
+        try (ExecutorService pool = Executors.newFixedThreadPool(clients)) {
+            for (int i = 0; i < clients; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return transfers.transfer(key, request);
+                }));
+            }
+            start.countDown();
+
+            List<Idempotent<TransferResponse>> responses = results.stream().map(IdempotencyTest::join).toList();
+            UUID entryId = responses.getFirst().value().journalEntryId();
+            assertThat(responses).extracting(r -> r.value().journalEntryId()).containsOnly(entryId);
+            assertThat(responses).filteredOn(Idempotent::replayed).hasSize(clients - 1);
+        }
+
+        assertThat(fixtures.balance(asha.getId())).isZero();
+        assertThat(fixtures.balance(ravi.getId())).isEqualTo(1_000);
+    }
+
     static String transfer(Account debit, Account credit, long amount) {
         return """
                 {"debitAccountId":"%s","creditAccountId":"%s","amount":%d,"currency":"INR"}

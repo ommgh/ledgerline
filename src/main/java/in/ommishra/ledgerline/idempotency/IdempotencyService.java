@@ -53,13 +53,17 @@ public class IdempotencyService {
                 if (existing.isPresent()) {
                     return replay(existing.get(), requestHash, responseType);
                 }
+                // Claim the key before doing any work. A concurrent duplicate now blocks on
+                // this primary key instead of on the account rows; inserting the key last
+                // let it run the work after we committed and fail on the drained balance.
+                IdempotencyRecord claim = records.saveAndFlush(IdempotencyRecord.claim(id, requestHash));
                 T response = work.get();
-                records.saveAndFlush(new IdempotencyRecord(id, requestHash, json.writeValueAsString(response)));
+                claim.complete(json.writeValueAsString(response));
                 return new Idempotent<>(response, false);
             });
         } catch (DataIntegrityViolationException race) {
-            // A concurrent request with the same key committed first. Our insert waited on its
-            // primary-key lock, then failed and rolled our work back; answer with its response.
+            // A concurrent request with the same key committed first. Our claim waited on its
+            // primary-key lock, then failed before any work ran; answer with its response.
             return transactions.execute(() -> records.findById(id)
                     .map(record -> replay(record, requestHash, responseType))
                     .orElseThrow(() -> race));
