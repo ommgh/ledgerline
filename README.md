@@ -11,7 +11,7 @@ flowchart LR
     client([Client]) -- "POST /transfers<br/>Idempotency-Key" --> api[REST API]
     razorpay([Razorpay]) -- "signed webhook" --> api
     api --> ledger[LedgerService]
-    ledger -- "one transaction" --> pg[(PostgreSQL<br/>accounts · journal_entries<br/>postings · idempotency_keys<br/>outbox_events · payouts)]
+    ledger -- "one transaction" --> pg[(PostgreSQL<br/>accounts · journal_entries<br/>postings · idempotency_keys<br/>outbox_events · payouts<br/>unapplied_webhook_events)]
     relay[OutboxRelay] -- "FOR UPDATE SKIP LOCKED" --> pg
     relay -- "keyed by aggregate id" --> kafka[[Kafka<br/>ledger.events]]
     check[Integrity check] -- "repeatable read" --> pg
@@ -24,7 +24,7 @@ flowchart LR
 | Every entry balances | `LedgerService` rejects any entry whose debits and credits differ (checked with `Math.addExact`, so overflow throws instead of wrapping). |
 | Balances never drift from postings | The cached balance and the posting rows are written in the same transaction; a scheduled check recomputes every balance from raw postings. |
 | No lost updates under concurrency | Accounts are row-locked in id order before balances change (see [Locking](#locking-optimistic-first-then-ordered-row-locks)). |
-| A retried request never moves money twice | `Idempotency-Key` is stored in the same transaction as the journal entry. |
+| A retried request never moves money twice (within the 24-hour key retention) | The `Idempotency-Key` is claimed before any work runs, in the same transaction as the journal entry. |
 | Events are published if and only if the change committed | Transactional outbox, no dual write. |
 | Wallets never go negative | Checked in `Account#apply` and by a database `CHECK` constraint. |
 
@@ -40,7 +40,8 @@ flowchart LR
 
 ```
 REQUESTED --payout.processed--> PROCESSED --payout.reversed--> REVERSED
-    \--payout.failed / payout.rejected--> FAILED
+    |--payout.failed / payout.rejected--> FAILED
+    \--payout.reversed (delivered before processed)--> REVERSED
 ```
 
 | Step | Journal entry |
@@ -48,7 +49,8 @@ REQUESTED --payout.processed--> PROCESSED --payout.reversed--> REVERSED
 | Request | Debit wallet (amount + fee) · credit payouts-in-transit (amount) · credit fee revenue (fee) |
 | Processed | Debit payouts-in-transit · credit bank |
 | Failed | Debit payouts-in-transit · debit fee revenue · credit wallet (amount + fee) |
-| Reversed | Debit bank · debit fee revenue · credit wallet (amount + fee) |
+| Reversed after processed | Debit bank · debit fee revenue · credit wallet (amount + fee) |
+| Reversed straight from requested | Same as failed: the money never reached the bank in our books |
 
 Holding the money in payouts-in-transit at request time means the wallet cannot
 spend it twice while the provider is working.
@@ -63,10 +65,13 @@ whole transaction. `ConcurrentTransferTest` (2,000 random transfers, 32 threads,
 still ran out of retries. Optimistic locking fits when conflicts are rare.
 A wallet ledger has hot accounts, so conflicts are common.
 
-`LedgerService` now locks every account in the entry with
-`SELECT ... ORDER BY id FOR UPDATE`. Because every transaction takes its locks in
-the same order, two opposite transfers between the same pair of wallets queue
-instead of deadlocking. The same test now runs with zero retries. `@Version`
+`LedgerService` now locks every account in the entry with one
+`SELECT ... ORDER BY id` and `PESSIMISTIC_WRITE`, which Hibernate sends to Postgres
+as `FOR NO KEY UPDATE`, not `FOR UPDATE`. It blocks other writers of the account
+row, but not the `FOR KEY SHARE` locks that foreign-key checks take when another
+transaction inserts postings for the same account. Because every transaction takes
+its locks in the same order, two opposite transfers between the same pair of
+wallets queue instead of deadlocking. The same test now runs with zero retries. `@Version`
 stays as a backstop for any write path that bypasses the ledger, and
 `LedgerTransactions` still retries the whole transaction on lock failures.
 
@@ -74,15 +79,22 @@ stays as a backstop for any write path that bypasses the ledger, and
 
 `POST /transfers` and `POST /payouts` require an `Idempotency-Key` header.
 
-- The key row (`scope`, `key`, request hash, response) is inserted in the **same
-  transaction** as the journal entry, so either both exist or neither does.
+- The key row (`scope`, `key`, request hash, response) is inserted **before the
+  work runs**, in the same transaction as the journal entry, so either both exist
+  or neither does. The response is filled in at the end of that transaction.
 - A retry with the same key and body replays the stored response with
   `Idempotent-Replayed: true`.
 - The same key with a different body is rejected with `422 idempotency_key_reused`.
 - Two concurrent requests with the same key race on the primary key. The loser's
-  insert waits on the winner's lock, fails once the winner commits, rolls back
-  its own postings, and replays the winner's response
+  insert waits on the winner's lock, fails once the winner commits, and replays
+  the winner's response without running the work
   (`IdempotencyTest.concurrentDuplicatesPostExactlyOnce`).
+- **A bug this fixed:** the first version inserted the key *after* the work. A
+  concurrent duplicate then waited on the account lock instead, ran the transfer
+  again against the wallet the winner had just drained, and answered
+  `insufficient_funds` although the money had moved. The original race test
+  missed it because its wallet held more than the transfer;
+  `concurrentDuplicatesThatDrainTheWalletAllGetTheOriginalResponse` empties it.
 - Only successes are stored, so a request rejected for insufficient funds can
   be retried with the same key once the wallet is topped up.
 - Keys are purged after 24 hours.
@@ -113,9 +125,16 @@ drains about **8,450 events/s**, and the backlog stays at zero under full load.
 - **Concurrency:** the payout row is locked for the transition, so two webhooks
   for the same payout cannot apply twice.
 - **Duplicate deliveries** are a no-op.
+- **Out-of-order delivery:** Razorpay does not guarantee webhook order, so
+  `payout.reversed` can arrive before `payout.processed`. The payout then goes
+  straight from `REQUESTED` to `REVERSED` and the hold is released to the wallet;
+  the late `processed` is ignored. Before this was handled, the reversal was
+  dropped and the wallet never got its money back
+  (`PayoutTest.reversalArrivingBeforeProcessedReleasesTheHold`).
 - **Authentic but inapplicable events** (unknown payout, or `failed` after
-  `processed`) get `200 ignored`. A non-2xx response would make the provider
-  redeliver an event that can never succeed.
+  `processed`) get `200 ignored`, because a non-2xx response would make the
+  provider redeliver an event that can never succeed. Each one is stored in
+  `unapplied_webhook_events` for reconciliation instead of only being logged.
 
 ### Integrity check
 
@@ -152,7 +171,7 @@ integrity check reported zero violations.
 docker compose up --build     # Postgres, Kafka and the service on :8080
 # if a local Postgres already holds 5432: POSTGRES_PORT=5434 docker compose up --build
 
-./mvnw verify                 # 42 tests; needs Docker for Testcontainers
+./mvnw verify                 # 44 tests; needs Docker for Testcontainers
 
 docker run --rm -i --network host grafana/k6 run - < loadtest/transfers.js
 # options: -e RATE=1500 -e DURATION=60s -e WALLETS=200
