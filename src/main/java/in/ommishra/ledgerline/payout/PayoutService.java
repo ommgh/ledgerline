@@ -26,8 +26,12 @@ import static in.ommishra.ledgerline.account.SystemAccounts.PAYOUT_FEES;
  *
  * <pre>
  * REQUESTED --processed--> PROCESSED --reversed--> REVERSED
- *     \--failed--> FAILED
+ *     |--failed--> FAILED
+ *     \--reversed (arrived before processed)--> REVERSED
  * </pre>
+ *
+ * <p>A reversal straight from REQUESTED never touched the bank account in our
+ * books, so it releases the hold from payouts-in-transit, like a failure.
  */
 @Service
 public class PayoutService {
@@ -75,11 +79,12 @@ public class PayoutService {
             Payout payout = payouts.lockById(payoutId)
                     .orElseThrow(() -> new NotFoundException("Payout %s not found".formatted(payoutId)));
             String reason = next == PayoutStatus.PROCESSED ? null : failureReason;
+            PayoutStatus from = payout.getStatus();
             if (!payout.moveTo(next, providerPayoutId, reason)) {
                 return false;
             }
-            ledger.post(entryKind(next), payout.getCurrency(), reference(payout), "Payout " + next.name().toLowerCase(),
-                    legs(payout, next));
+            ledger.post(entryKind(from, next), payout.getCurrency(), reference(payout), "Payout " + next.name().toLowerCase(),
+                    legs(payout, from, next));
             outbox.append("Payout", payout.getId(), "Payout" + capitalize(next), PayoutResponse.from(payout));
             return true;
         });
@@ -91,7 +96,7 @@ public class PayoutService {
                 .orElseThrow(() -> new NotFoundException("Payout %s not found".formatted(id)));
     }
 
-    private List<Leg> legs(Payout payout, PayoutStatus next) {
+    private List<Leg> legs(Payout payout, PayoutStatus from, PayoutStatus next) {
         UUID wallet = payout.getWalletAccountId();
         UUID inTransit = system.id(PAYOUTS_IN_TRANSIT);
         UUID bank = system.id(BANK);
@@ -101,19 +106,26 @@ public class PayoutService {
                 legs.add(Leg.debit(inTransit, payout.getAmount()));
                 legs.add(Leg.credit(bank, payout.getAmount()));
             }
-            case FAILED -> {
-                legs.add(Leg.debit(inTransit, payout.getAmount()));
-                refundFee(payout, legs);
-                legs.add(Leg.credit(wallet, payout.totalDebited()));
-            }
+            case FAILED -> releaseHold(payout, inTransit, wallet, legs);
             case REVERSED -> {
-                legs.add(Leg.debit(bank, payout.getAmount()));
-                refundFee(payout, legs);
-                legs.add(Leg.credit(wallet, payout.totalDebited()));
+                if (from == PayoutStatus.REQUESTED) {
+                    releaseHold(payout, inTransit, wallet, legs);
+                } else {
+                    legs.add(Leg.debit(bank, payout.getAmount()));
+                    refundFee(payout, legs);
+                    legs.add(Leg.credit(wallet, payout.totalDebited()));
+                }
             }
             case REQUESTED -> throw new IllegalArgumentException("REQUESTED is not a provider update");
         }
         return legs;
+    }
+
+    /** Returns money that never left our books: in-transit back to the wallet, fee refunded. */
+    private void releaseHold(Payout payout, UUID inTransit, UUID wallet, List<Leg> legs) {
+        legs.add(Leg.debit(inTransit, payout.getAmount()));
+        refundFee(payout, legs);
+        legs.add(Leg.credit(wallet, payout.totalDebited()));
     }
 
     private void refundFee(Payout payout, List<Leg> legs) {
@@ -122,11 +134,11 @@ public class PayoutService {
         }
     }
 
-    private static EntryKind entryKind(PayoutStatus next) {
+    private static EntryKind entryKind(PayoutStatus from, PayoutStatus next) {
         return switch (next) {
             case PROCESSED -> EntryKind.PAYOUT_SETTLEMENT;
             case FAILED -> EntryKind.PAYOUT_RELEASE;
-            case REVERSED -> EntryKind.PAYOUT_REVERSAL;
+            case REVERSED -> from == PayoutStatus.REQUESTED ? EntryKind.PAYOUT_RELEASE : EntryKind.PAYOUT_REVERSAL;
             case REQUESTED -> throw new IllegalArgumentException("REQUESTED is not a provider update");
         };
     }

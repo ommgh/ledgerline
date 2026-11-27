@@ -11,7 +11,7 @@ class PayoutStatusTest {
     @CsvSource({
             "REQUESTED, PROCESSED, true",
             "REQUESTED, FAILED,    true",
-            "REQUESTED, REVERSED,  false",
+            "REQUESTED, REVERSED,  true",
             "PROCESSED, REVERSED,  true",
             "PROCESSED, FAILED,    false",
             "FAILED,    PROCESSED, false",
