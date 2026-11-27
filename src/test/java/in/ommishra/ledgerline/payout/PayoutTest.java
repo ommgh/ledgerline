@@ -9,6 +9,7 @@ import in.ommishra.ledgerline.outbox.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
@@ -45,6 +46,35 @@ class PayoutTest {
 
     @Autowired
     WebhookProperties webhookProperties;
+
+    @Autowired
+    JdbcTemplate jdbc;
+
+    /**
+     * Razorpay does not guarantee webhook order. A reversal that arrives before the
+     * processed event must still return the money, and the stale processed event
+     * must not move the payout back.
+     */
+    @Test
+    void reversalArrivingBeforeProcessedReleasesTheHold() throws Exception {
+        Account wallet = fixtures.fundedWallet(fixtures.bank(), 10_000);
+        long bankBefore = balance(SystemAccounts.BANK);
+        long inTransitBefore = balance(SystemAccounts.PAYOUTS_IN_TRANSIT);
+        long feesBefore = balance(SystemAccounts.PAYOUT_FEES);
+        PayoutResponse payout = request(wallet, 4_000, 20);
+
+        webhook("payout.reversed", payout.id(), "pout_F1").andExpect(jsonPath("$.status").value("applied"));
+        webhook("payout.processed", payout.id(), "pout_F1").andExpect(jsonPath("$.status").value("ignored"));
+
+        assertThat(payouts.get(payout.id()).status()).isEqualTo(PayoutStatus.REVERSED);
+        assertThat(fixtures.balance(wallet.getId())).isEqualTo(10_000);
+        assertThat(balance(SystemAccounts.BANK)).isEqualTo(bankBefore);
+        assertThat(balance(SystemAccounts.PAYOUTS_IN_TRANSIT)).isEqualTo(inTransitBefore);
+        assertThat(balance(SystemAccounts.PAYOUT_FEES)).isEqualTo(feesBefore);
+        assertThat(jdbc.queryForList(
+                "select event_type from unapplied_webhook_events where payout_id = ?", String.class, payout.id()))
+                .containsExactly("payout.processed");
+    }
 
     @Test
     void requestHoldsAmountPlusFee() {

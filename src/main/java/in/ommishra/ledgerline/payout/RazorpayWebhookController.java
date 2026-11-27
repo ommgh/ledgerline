@@ -27,8 +27,9 @@ import java.util.UUID;
  * body, so the body is read as a string and verified before it is parsed.
  *
  * <p>Anything that is authentic but cannot be applied (unknown payout, an event
- * arriving after a terminal state) is acknowledged with 200: a non-2xx would make
- * the provider redeliver an event that will never succeed.
+ * arriving after a terminal state) is acknowledged with 200, because a non-2xx would
+ * make the provider redeliver an event that will never succeed. It is also stored in
+ * {@code unapplied_webhook_events}, so reconciliation sees it instead of a log line.
  */
 @RestController
 public class RazorpayWebhookController {
@@ -42,11 +43,14 @@ public class RazorpayWebhookController {
             "payout.reversed", PayoutStatus.REVERSED);
 
     private final PayoutService payoutService;
+    private final UnappliedWebhookEvents unapplied;
     private final ObjectMapper json;
     private final byte[] secret;
 
-    public RazorpayWebhookController(PayoutService payoutService, ObjectMapper json, WebhookProperties properties) {
+    public RazorpayWebhookController(PayoutService payoutService, UnappliedWebhookEvents unapplied, ObjectMapper json,
+                                     WebhookProperties properties) {
         this.payoutService = payoutService;
+        this.unapplied = unapplied;
         this.json = json;
         this.secret = properties.razorpaySecret().getBytes(StandardCharsets.UTF_8);
     }
@@ -71,22 +75,28 @@ public class RazorpayWebhookController {
         }
 
         JsonNode payout = event.path("payload").path("payout").path("entity");
+        String providerPayoutId = text(payout.path("id"));
         UUID payoutId;
         try {
             payoutId = UUID.fromString(String.valueOf(text(payout.path("reference_id"))));
         } catch (IllegalArgumentException e) {
-            log.warn("Webhook {} has no usable reference_id", type);
-            return ResponseEntity.ok(Map.of("status", "ignored"));
+            return ignore(type, null, providerPayoutId, "no usable reference_id", body);
         }
 
         try {
-            boolean applied = payoutService.applyProviderUpdate(payoutId, next, text(payout.path("id")),
+            boolean applied = payoutService.applyProviderUpdate(payoutId, next, providerPayoutId,
                     text(payout.path("status_details").path("description")));
             return ResponseEntity.ok(Map.of("status", applied ? "applied" : "duplicate"));
         } catch (NotFoundException | IllegalPayoutTransitionException e) {
-            log.warn("Ignoring webhook {} for payout {}: {}", type, payoutId, e.getMessage());
-            return ResponseEntity.ok(Map.of("status", "ignored"));
+            return ignore(type, payoutId, providerPayoutId, e.getMessage(), body);
         }
+    }
+
+    private ResponseEntity<Map<String, String>> ignore(String type, UUID payoutId, String providerPayoutId,
+                                                       String reason, String body) {
+        log.warn("Ignoring webhook {} for payout {}: {}", type, payoutId, reason);
+        unapplied.record(type, payoutId, providerPayoutId, reason, body);
+        return ResponseEntity.ok(Map.of("status", "ignored"));
     }
 
     private boolean signatureMatches(String body, String signature) {
