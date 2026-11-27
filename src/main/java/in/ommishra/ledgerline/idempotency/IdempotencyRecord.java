@@ -21,7 +21,8 @@ class IdempotencyRecord implements Persistable<IdempotencyRecordId> {
     @Column(nullable = false, updatable = false)
     private String requestHash;
 
-    @Column(nullable = false, updatable = false)
+    /** Empty while the claiming transaction runs; nobody else can see the row until it commits with a response. */
+    @Column(nullable = false)
     private String responseBody;
 
     @Column(nullable = false, updatable = false)
@@ -34,11 +35,20 @@ class IdempotencyRecord implements Persistable<IdempotencyRecordId> {
     protected IdempotencyRecord() {
     }
 
-    IdempotencyRecord(IdempotencyRecordId id, String requestHash, String responseBody) {
+    private IdempotencyRecord(IdempotencyRecordId id, String requestHash) {
         this.id = id;
         this.requestHash = requestHash;
-        this.responseBody = responseBody;
+        this.responseBody = "";
         this.createdAt = Instant.now();
+    }
+
+    /** A key taken before the work runs; {@link #complete} stores the response in the same transaction. */
+    static IdempotencyRecord claim(IdempotencyRecordId id, String requestHash) {
+        return new IdempotencyRecord(id, requestHash);
+    }
+
+    void complete(String responseBody) {
+        this.responseBody = responseBody;
     }
 
     @PostLoad
